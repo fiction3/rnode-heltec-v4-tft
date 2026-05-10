@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include "Utilities.h"
+#include "TFT_Display.h"
 
 FIFOBuffer serialFIFO;
 uint8_t serialBuffer[CONFIG_UART_BUFFER_SIZE+1];
@@ -120,6 +121,7 @@ void setup() {
   fifo_init(&serialFIFO, serialBuffer, CONFIG_UART_BUFFER_SIZE);
 
   Serial.begin(serial_baudrate);
+  tft_init();
 
   #if HAS_NP
     led_init();
@@ -1754,6 +1756,7 @@ void loop() {
       kiss_indicate_error(ERROR_MEMORY_LOW); memory_low = false;
     #endif
   }
+  tft_update((float)lora_freq/1000000.0, lora_sf, lora_bw, lora_cr, last_rssi, (float)last_snr_raw/100.0, stat_rx, stat_tx, airtime_lock, 0);
 }
 
 void sleep_now() {
