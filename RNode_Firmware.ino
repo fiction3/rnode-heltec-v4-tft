@@ -1787,7 +1787,7 @@ void loop() {
       kiss_indicate_error(ERROR_MEMORY_LOW); memory_low = false;
     #endif
   }
-  tft_update((float)lora_freq/1000000.0, lora_sf, lora_bw, lora_cr, last_rssi, (float)last_snr_raw/100.0, stat_rx, stat_tx, airtime_lock, 0);
+  tft_update((float)lora_freq/1000000.0, lora_sf, lora_bw, lora_cr, last_rssi, (float)last_snr_raw/100.0, stat_rx, stat_tx, airtime_lock, lora_txp, cable_state == CABLE_STATE_CONNECTED, 0);
 }
 
 void sleep_now() {

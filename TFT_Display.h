@@ -96,6 +96,8 @@ void tft_update(
     uint32_t rx_count,
     uint32_t tx_count,
     bool     airtime_lock,
+    uint8_t  tx_power_dbm,
+    bool     host_connected,
     uint8_t  led_state
 );
 void tft_invalidate();

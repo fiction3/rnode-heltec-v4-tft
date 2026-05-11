@@ -90,6 +90,7 @@ static uint32_t _bw     = 0; static int8_t   _cr   = 0;
 static int16_t  _rssi   = 0; static float    _snr  = 0;
 static uint32_t _rx     = 0; static uint32_t _tx   = 0;
 static bool     _airlock= false; static uint8_t _led = 0;
+static uint8_t  _txp    = 0;     static bool     _host_connected = false;
 
 // Touch debounce
 #define TOUCH_DEBOUNCE  150
@@ -353,53 +354,75 @@ static void _draw_home() {
 }
 
 // ── RADIO tab ─────────────────────────────────────────────────────────────────
+// 6 cards at 34px each fit into CONTENT_H = 222 with room to spare.
+#define RADIO_CARD_H 34
 static void _draw_radio() {
     tft.fillRect(0, CONTENT_Y, TFT_WIDTH, CONTENT_H, C_BG);
     _header("Radio Config", _led == 1 ? C_GREEN : _led == 2 ? C_RED : C_TEXT_DIM);
 
     char buf[32];
-    int16_t y = CONTENT_Y + 4;
+    int16_t y = CONTENT_Y + 2;
+    const int16_t cw = TFT_WIDTH - CARD_PAD*2;
+
+    // Helper-free; copy-paste pattern keeps the original style.
 
     // Frequency
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("FREQUENCY");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("FREQUENCY");
     tft.setTextColor(C_ACCENT); tft.setTextSize(2);
     snprintf(buf, sizeof(buf), "%.4f MHz", _freq);
-    tft.setCursor(CARD_PAD + 8, y + 18); tft.print(buf);
-    y += CARD_H + 3;
+    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
+    y += RADIO_CARD_H + 2;
 
     // Spreading factor
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("SPREADING FACTOR");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("SPREADING FACTOR");
     tft.setTextColor(C_ACCENT); tft.setTextSize(2);
     snprintf(buf, sizeof(buf), "SF%u", _sf);
-    tft.setCursor(CARD_PAD + 8, y + 18); tft.print(buf);
-    y += CARD_H + 3;
+    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
+    y += RADIO_CARD_H + 2;
 
     // Bandwidth
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("BANDWIDTH");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("BANDWIDTH");
     tft.setTextColor(C_ACCENT); tft.setTextSize(2);
     snprintf(buf, sizeof(buf), "%lu kHz", _bw / 1000UL);
-    tft.setCursor(CARD_PAD + 8, y + 18); tft.print(buf);
-    y += CARD_H + 3;
+    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
+    y += RADIO_CARD_H + 2;
 
     // Coding rate
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("CODING RATE");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("CODING RATE");
     tft.setTextColor(C_ACCENT); tft.setTextSize(2);
     snprintf(buf, sizeof(buf), "4/%d", _cr);
-    tft.setCursor(CARD_PAD + 8, y + 18); tft.print(buf);
-    y += CARD_H + 3;
+    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
+    y += RADIO_CARD_H + 2;
 
-    // Note
+    // TX Power
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 4, y + 8);
-    tft.print("Config via Sideband / host");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("TX POWER");
+    tft.setTextColor(C_ACCENT); tft.setTextSize(2);
+    if (_txp == 0xFF) {
+        tft.setCursor(CARD_PAD + 8, y + 16); tft.print("-- dBm");
+    } else {
+        snprintf(buf, sizeof(buf), "%u dBm", _txp);
+        tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
+    }
+    y += RADIO_CARD_H + 2;
+
+    // Host connection status
+    uint16_t status_color = _host_connected ? C_GREEN : C_RED;
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, status_color);
+    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("STATUS");
+    tft.setTextColor(status_color); tft.setTextSize(2);
+    tft.setCursor(CARD_PAD + 8, y + 16);
+    tft.print(_host_connected ? "Connected" : "Disconnected");
 }
 
 // ── BT tab ────────────────────────────────────────────────────────────────────
@@ -640,7 +663,9 @@ static void _handle_touch() {
 void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
                 int16_t last_rssi, float last_snr,
                 uint32_t rx_count, uint32_t tx_count,
-                bool airtime_lock, uint8_t led_state) {
+                bool airtime_lock,
+                uint8_t tx_power_dbm, bool host_connected,
+                uint8_t led_state) {
 
     uint32_t now = millis();
 
@@ -658,6 +683,7 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
     _rssi=last_rssi; _snr=last_snr;
     _rx=rx_count; _tx=tx_count;
     _airlock=airtime_lock; _led=led_state;
+    _txp=tx_power_dbm; _host_connected=host_connected;
 
     // Always handle touch first
     _handle_touch();
