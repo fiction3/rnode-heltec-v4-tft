@@ -1687,6 +1687,21 @@ void tx_queue_handler() {
 void work_while_waiting() { loop(); }
 
 void loop() {
+  // Periodic USB host connection check (ESP32-S3 native CDC).
+  // host_disconnected() exists but was never called; without this poll the
+  // cable_state would stay CONNECTED forever after the host vanishes.
+  {
+    static uint32_t _last_usb_check = 0;
+    if (millis() - _last_usb_check > 500) {
+      _last_usb_check = millis();
+      if (bt_state != BT_STATE_CONNECTED &&
+          cable_state == CABLE_STATE_CONNECTED &&
+          !Serial) {
+        host_disconnected();
+      }
+    }
+  }
+
   if (radio_online) {
     #if MCU_VARIANT == MCU_ESP32
       modem_packet_t *modem_packet = NULL;
