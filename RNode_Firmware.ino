@@ -16,6 +16,37 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include "Utilities.h"
+
+// Forward declarations (PlatformIO does not auto-prototype like arduino-cli)
+void setup();
+void lora_receive();
+void ISR_VECT receive_callback(int packet_size);
+bool startRadio();
+void stopRadio();
+void update_radio_lock();
+bool queue_full();
+void flush_queue(void);
+void pop_queue();
+void add_airtime(uint16_t written);
+void update_airtime();
+void transmit(uint16_t size);
+void serial_callback(uint8_t sbyte);
+bool medium_free();
+void update_noise_floor();
+void update_modem_status();
+void check_modem_status();
+void validate_status();
+void tx_queue_handler();
+void work_while_waiting();
+void loop();
+void sleep_now();
+void button_event(uint8_t event, unsigned long duration);
+void serial_poll();
+void buffer_serial();
+void serial_interrupt_init();
+#if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52
+void update_csma_parameters();
+#endif
 #include "TFT_Display.h"
 
 FIFOBuffer serialFIFO;

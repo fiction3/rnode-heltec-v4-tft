@@ -395,7 +395,7 @@
       #define HAS_BLE true
       #define HAS_WIFI true
       #define HAS_PMU true
-      #define HAS_CONSOLE true
+      #define HAS_CONSOLE false
       #define HAS_EEPROM true
       #define HAS_INPUT true
       #define HAS_SLEEP true
