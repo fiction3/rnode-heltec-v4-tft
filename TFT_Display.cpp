@@ -25,10 +25,12 @@ extern uint8_t battery_state;
 #define BT_STATE_OFF       0x00
 #define BT_STATE_PAIRING   0x02
 #define BT_STATE_CONNECTED 0x03
+extern uint8_t dev_bt_mac[6];
 extern char     bt_devname[11];
 extern bool     bt_ready;
 extern bool     bt_enabled;
 extern uint8_t  bt_state;
+extern bool wifi_host_is_connected();
 extern bool     bt_allow_pairing;
 extern uint32_t bt_ssp_pin;
 extern uint32_t bt_pairing_started;
@@ -282,7 +284,7 @@ static void _draw_home() {
 
     // Status indicator dot colour
     uint16_t dot = _bt_connected ? C_GREEN :
-                   (_bt_state == BT_PAIRING) ? C_YELLOW : C_TEXT_DIM;
+                   (_bt_state == BT_STATE_PAIRING) ? C_YELLOW : C_TEXT_DIM;
     _header("RNode Status", dot);
 
     char buf[32];
@@ -335,7 +337,7 @@ static void _draw_home() {
     if (_bt_connected) {
         tft.setTextColor(C_GREEN);
         tft.setCursor(CARD_PAD + 8, y + 18); tft.print("BT Connected");
-    } else if (_bt_state == BT_PAIRING) {
+    } else if (_bt_state == BT_STATE_PAIRING) {
         tft.setTextColor(C_YELLOW);
         tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Pairing...");
     } else {
@@ -356,6 +358,7 @@ static void _draw_home() {
 // ── RADIO tab ─────────────────────────────────────────────────────────────────
 // 6 cards at 34px each fit into CONTENT_H = 222 with room to spare.
 #define RADIO_CARD_H 34
+#define BT_CARD_H    34
 static void _draw_radio() {
     tft.fillRect(0, CONTENT_Y, TFT_WIDTH, CONTENT_H, C_BG);
     _header("Radio Config", _led == 1 ? C_GREEN : _led == 2 ? C_RED : C_TEXT_DIM);
@@ -416,13 +419,29 @@ static void _draw_radio() {
     y += RADIO_CARD_H + 2;
 
     // Host connection status
-    uint16_t status_color = _host_connected ? C_GREEN : C_RED;
-    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, status_color);
+    uint16_t status_color = _host_connected ? C_GREEN : C_RED;  // text color only
+    _card(CARD_PAD, y, cw, RADIO_CARD_H, C_CARD, C_DIVIDER);    // neutral border
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("STATUS");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("CONNECTED TO");
     tft.setTextColor(status_color); tft.setTextSize(2);
     tft.setCursor(CARD_PAD + 8, y + 16);
-    tft.print(_host_connected ? "Connected" : "Disconnected");
+    {
+        const char* link;
+        uint16_t link_color;
+        if (bt_state == BT_STATE_PAIRING) {
+            link = "Pairing"; link_color = C_YELLOW;
+        } else if (bt_state == BT_STATE_CONNECTED) {
+            link = "Bluetooth"; link_color = C_GREEN;
+        } else if (_host_connected) {
+            link = "USB Host"; link_color = C_GREEN;
+        } else if (wifi_host_is_connected()) {
+            link = "Network"; link_color = C_GREEN;
+        } else {
+            link = "Disconnected"; link_color = C_RED;
+        }
+        tft.setTextColor(link_color);
+        tft.print(link);
+    }
 }
 
 // ── BT tab ────────────────────────────────────────────────────────────────────
@@ -438,27 +457,46 @@ static void _draw_bt() {
     int16_t y = CONTENT_Y + 8;
 
     // Device name card
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("DEVICE NAME");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("DEVICE NAME");
     tft.setTextColor(C_ACCENT); tft.setTextSize(2);
-    tft.setCursor(CARD_PAD + 8, y + 18);
+    tft.setCursor(CARD_PAD + 8, y + 16);
     if (bt_ready && strlen(bt_devname) > 0) {
         tft.print(bt_devname);
     } else {
         tft.print("Not ready");
     }
-    y += CARD_H + 4;
+    y += BT_CARD_H + 4;
+
+    // MAC address card (hidden when busy with pairing or connected)
+    {  // MAC always shown
+        _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H, C_CARD, C_DIVIDER);
+        tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
+        tft.setCursor(CARD_PAD + 8, y + 4); tft.print("MAC ADDRESS");
+        tft.setTextColor(C_ACCENT); tft.setTextSize(2);
+        tft.setCursor(CARD_PAD + 8, y + 16);
+        if (bt_ready) {
+            char macbuf[20];
+            snprintf(macbuf, sizeof(macbuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                dev_bt_mac[0], dev_bt_mac[1], dev_bt_mac[2],
+                dev_bt_mac[3], dev_bt_mac[4], dev_bt_mac[5]);
+            tft.print(macbuf);
+        } else {
+            tft.print("--:--:--:--:--:--");
+        }
+        y += BT_CARD_H + 4;
+    }
 
     // Status card
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD,
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H, C_CARD,
           fw_connected ? C_GREEN : fw_pairing ? C_YELLOW : C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("STATUS");
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("STATUS");
     tft.setTextSize(2);
     if (fw_connected) {
         tft.setTextColor(C_GREEN);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Connected");
+        tft.setCursor(CARD_PAD + 8, y + 16); tft.print("Connected");
     } else if (fw_pairing) {
         tft.setTextColor(C_YELLOW);
         uint32_t now_ms = millis();
@@ -466,45 +504,52 @@ static void _draw_bt() {
         uint32_t remaining = (elapsed < 35000UL) ? (35000UL - elapsed) / 1000 : 0;
         char tbuf[20];
         snprintf(tbuf, sizeof(tbuf), "Pairing %lus", remaining);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print(tbuf);
+        tft.setCursor(CARD_PAD + 8, y + 16); tft.print(tbuf);
     } else {
         tft.setTextColor(C_TEXT_DIM);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Not connected");
+        tft.setCursor(CARD_PAD + 8, y + 16); tft.print("Not connected");
     }
-    y += CARD_H + 4;
+    y += BT_CARD_H + 4;
 
     // Action buttons
     if (!fw_connected && !fw_pairing) {
-        _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, 46,
+        _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H,
              "START PAIRING", C_BTN, C_ACCENT, 2);
-        y += 54;
+        y += BT_CARD_H + 4;
         tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
         tft.setCursor(CARD_PAD + 4, y + 4);
         tft.print("Tap to make discoverable.");
         tft.setCursor(CARD_PAD + 4, y + 16);
         tft.print("Connect from any Reticulum app.");
     } else if (fw_pairing) {
-        _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, 46,
+        _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H,
              "CANCEL PAIRING", C_CARD, C_RED, 2);
-        y += 54;
+        y += BT_CARD_H + 4;
         // PIN card
-        _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, 60, C_CARD, C_YELLOW);
+        _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H, C_CARD, C_YELLOW);
         tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-        tft.setCursor(CARD_PAD + 8, y + 6);
+        tft.setCursor(CARD_PAD + 8, y + 4);
         tft.print("PAIRING PIN");
         if (bt_ssp_pin != 0) {
-            tft.setTextColor(C_YELLOW); tft.setTextSize(3);
+            tft.setTextColor(C_YELLOW); tft.setTextSize(2);
             char pinbuf[10];
             snprintf(pinbuf, sizeof(pinbuf), "%06lu", bt_ssp_pin);
-            int16_t pw = strlen(pinbuf) * 18;
-            tft.setCursor((TFT_WIDTH - pw) / 2, y + 22);
-            tft.print(pinbuf);
+            // Add spaces between digits for readability: "876661" -> "8 7 6 6 6 1"
+            char spaced[16] = {0};
+            int sl = 0;
+            for (int i = 0; pinbuf[i] && sl < 14; i++) {
+                spaced[sl++] = pinbuf[i];
+                if (pinbuf[i+1]) spaced[sl++] = ' ';
+            }
+            int16_t pw = sl * 12;
+            tft.setCursor((TFT_WIDTH - pw) / 2, y + 16);
+            tft.print(spaced);
         } else {
             tft.setTextColor(C_TEXT_DIM); tft.setTextSize(2);
-            tft.setCursor(CARD_PAD + 8, y + 22);
+            tft.setCursor(CARD_PAD + 8, y + 16);
             tft.print("Waiting...");
         }
-        y += 68;
+        y += BT_CARD_H + 4;
         tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
         tft.setCursor(CARD_PAD + 4, y);
         tft.print("Scan for RNode C6D9 and pair");
@@ -512,17 +557,17 @@ static void _draw_bt() {
         tft.print("from your device BT settings.");
     } else if (fw_connected) {
         // Connected info card
-        _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_GREEN);
+        _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H, C_CARD, C_GREEN);
         tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-        tft.setCursor(CARD_PAD + 8, y + 6);
+        tft.setCursor(CARD_PAD + 8, y + 4);
         tft.print("CONNECTED DEVICE");
         tft.setTextColor(C_GREEN); tft.setTextSize(2);
-        tft.setCursor(CARD_PAD + 8, y + 18);
+        tft.setCursor(CARD_PAD + 8, y + 16);
         tft.print("BLE Client");
-        y += CARD_H + 4;
-        _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, 46,
+        y += BT_CARD_H + 4;
+        _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, BT_CARD_H,
              "DISCONNECT", C_CARD, C_RED, 2);
-        y += 54;
+        y += BT_CARD_H + 4;
         tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
         tft.setCursor(CARD_PAD + 4, y + 4);
         tft.print("Auto-reconnects when in range.");
@@ -636,12 +681,14 @@ static void _handle_touch() {
     if (_tab == TAB_BT) {
         bool fw_connected = (bt_state == BT_STATE_CONNECTED);
         bool fw_pairing   = (bt_state == BT_STATE_PAIRING);
-        int16_t btn_y_start = CONTENT_Y + 8 + (CARD_H + 4) * 2;
-        if (fw_connected) btn_y_start += (CARD_H + 4);  // name+status+connected device
+        // Button position depends on whether MAC card is shown (hidden during pairing)
+        int cards_above = 3;  // name + MAC + status always shown
+        int16_t btn_y_start = CONTENT_Y + 8 + (BT_CARD_H + 4) * cards_above;
+        if (fw_connected) btn_y_start += (BT_CARD_H + 4);  // + connected-device card
 
-        if (ty >= (uint16_t)btn_y_start && ty <= (uint16_t)(btn_y_start + 60)) {
+        if (ty >= (uint16_t)btn_y_start && ty <= (uint16_t)(btn_y_start + BT_CARD_H)) {
             // Flash button
-            tft.fillRoundRect(CARD_PAD, btn_y_start, TFT_WIDTH - CARD_PAD*2, 50, CARD_RADIUS, C_ACCENT);
+            tft.fillRoundRect(CARD_PAD, btn_y_start, TFT_WIDTH - CARD_PAD*2, BT_CARD_H, CARD_RADIUS, C_ACCENT);
             delay(60);
             if (!fw_connected && !fw_pairing) {
                 // Start pairing via firmware function
@@ -699,41 +746,39 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
     if (!_splash_done) return;
 
     // BT pairing timeout
-    if (_bt_state == BT_PAIRING && (now - _bt_pair_start > BT_PIN_TIMEOUT)) {
+    if (_bt_state == BT_STATE_PAIRING && (now - _bt_pair_start > BT_PIN_TIMEOUT)) {
         _bt_state = BT_IDLE;
         snprintf(_bt_pin, sizeof(_bt_pin), "------");
         _needs_redraw = true;
     }
 
     // BT tab countdown refresh every second
-    if (_tab == TAB_BT && _bt_state == BT_PAIRING &&
+    if (_tab == TAB_BT && _bt_state == BT_STATE_PAIRING &&
         now - _last_refresh >= 1000) {
         _needs_redraw = true;
     }
 
-    // BT tab: update countdown in-place without full redraw
-    static uint32_t _last_bt_refresh = 0;
+    // BT tab: in-place countdown update — no full-screen redraw
     static uint32_t _last_ssp = 0;
+    static uint32_t _last_remaining = 0xFFFFFFFF;
     if (_tab == TAB_BT && bt_state == BT_STATE_PAIRING) {
-        bool pin_changed = (bt_ssp_pin != _last_ssp);
-        if (pin_changed) {
+        uint32_t elapsed = (now > bt_pairing_started) ? now - bt_pairing_started : 0;
+        uint32_t remaining = (elapsed < 35000UL) ? (35000UL - elapsed) / 1000 : 0;
+        if (bt_ssp_pin != _last_ssp) {
+            // PIN changed (first appears) — needs full redraw to draw PIN card
             _last_ssp = bt_ssp_pin;
-            _needs_redraw = true; // Full redraw only when PIN first appears
-        } else if (now - _last_bt_refresh >= 1000) {
-            _last_bt_refresh = now;
-            // Update countdown text in-place - clear full card interior first
-            int16_t cnt_y = CONTENT_Y + 8 + (CARD_H + 4);
-            // Clear the status card interior
-            tft.fillRect(CARD_PAD + 2, cnt_y + 2, TFT_WIDTH - CARD_PAD*2 - 4, CARD_H - 4, C_CARD);
-            uint32_t elapsed = (now > bt_pairing_started) ? now - bt_pairing_started : 0;
-            uint32_t remaining = (elapsed < 35000UL) ? (35000UL - elapsed) / 1000 : 0;
+            _last_remaining = remaining;
+            _needs_redraw = true;
+        } else if (remaining != _last_remaining) {
+            // Just countdown changed — repaint only the STATUS card value
+            _last_remaining = remaining;
+            int16_t status_y = CONTENT_Y + 8 + 2 * (BT_CARD_H + 4);
+            tft.fillRect(CARD_PAD + 4, status_y + 14,
+                         TFT_WIDTH - CARD_PAD*2 - 8, BT_CARD_H - 16, C_CARD);
+            tft.setTextColor(C_YELLOW); tft.setTextSize(2);
             char tbuf[20];
             snprintf(tbuf, sizeof(tbuf), "Pairing %lus", remaining);
-            tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-            tft.setCursor(CARD_PAD + 8, cnt_y + 6);
-            tft.print("STATUS");
-            tft.setTextColor(C_YELLOW); tft.setTextSize(2);
-            tft.setCursor(CARD_PAD + 8, cnt_y + 18);
+            tft.setCursor(CARD_PAD + 8, status_y + 16);
             tft.print(tbuf);
         }
     }
