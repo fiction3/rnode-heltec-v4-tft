@@ -51,8 +51,8 @@ uint8_t eeprom_read(uint32_t mapped_addr);
 #if HAS_DISPLAY == true
   #include "Display.h"
 #else
-	void display_unblank() {}
 	bool display_blanked = false;
+	void display_unblank() { display_blanked = false; }
 #endif
 
 #if HAS_BLUETOOTH == true || HAS_BLE == true

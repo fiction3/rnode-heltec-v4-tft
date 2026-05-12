@@ -2,6 +2,7 @@
 // Full touch UI for RNode Firmware - Heltec WiFi LoRa 32 V4 Expansion Kit
 
 #include "TFT_Display.h"
+#include <WiFi.h>
 
 // ── Firmware display variables ──────────────────────────────────────────────
 extern bool display_blanked;
@@ -37,6 +38,22 @@ extern uint32_t bt_pairing_started;
 bool bt_init();
 void bt_start();
 void bt_stop();
+void bt_conf_save(bool is_enabled);
+// WiFi externs/forward decls
+extern uint8_t wifi_mode;
+extern uint8_t wr_state;
+void wifi_remote_init();
+void wifi_remote_stop();
+void wr_conf_save(uint8_t mode);
+// Mirror constants from Config.h (not directly included here)
+#ifndef WR_WIFI_OFF
+  #define WR_WIFI_OFF        0x00
+  #define WR_WIFI_STA        0x01
+  #define WR_WIFI_AP         0x02
+  #define WR_STATE_OFF       0x00
+  #define WR_STATE_ON        0x01
+  #define WR_STATE_CONNECTED 0x02
+#endif
 void bt_enable_pairing();
 void bt_disable_pairing();
 
@@ -193,7 +210,7 @@ static void _navbar() {
     tft.fillRect(0, NAVBAR_Y, TFT_WIDTH, NAVBAR_H, C_NAVBG);
     tft.drawFastHLine(0, NAVBAR_Y, TFT_WIDTH, C_DIVIDER);
 
-    const char* labels[] = {"HOME", "RADIO", "BT", "STATS"};
+    const char* labels[] = {"HOME", "RADIO", "BT", "TOOLS"};
     int16_t tab_w = TFT_WIDTH / TAB_COUNT;
 
     for (int i = 0; i < TAB_COUNT; i++) {
@@ -232,12 +249,17 @@ static void _navbar() {
                 tft.drawLine(cx+8, iy+6, cx-6, iy+14, sel?C_NAVSEL:C_TEXT_DIM);
                 tft.drawLine(cx-6, iy+14, cx+8, iy+20, sel?C_NAVSEL:C_TEXT_DIM);
                 break;
-            case TAB_STATS:
-                // Bar chart
-                tft.fillRect(cx-10, iy+14, 5, 6, sel?C_NAVSEL:C_TEXT_DIM);
-                tft.fillRect(cx-3,  iy+8,  5, 12, sel?C_NAVSEL:C_TEXT_DIM);
-                tft.fillRect(cx+4,  iy+4,  5, 16, sel?C_NAVSEL:C_TEXT_DIM);
+            case TAB_STATS: {
+                // Sliders icon: 3 horizontal lines with offset filled knobs
+                uint16_t col = sel?C_NAVSEL:C_TEXT_DIM;
+                tft.drawFastHLine(cx-10, iy+4,  20, col);
+                tft.drawFastHLine(cx-10, iy+12, 20, col);
+                tft.drawFastHLine(cx-10, iy+20, 20, col);
+                tft.fillCircle(cx-4, iy+4,  2, col);
+                tft.fillCircle(cx+6, iy+12, 2, col);
+                tft.fillCircle(cx-1, iy+20, 2, col);
                 break;
+            }
         }
 
         // Label
@@ -579,26 +601,14 @@ static void _draw_bt() {
 // ── STATS tab ─────────────────────────────────────────────────────────────────
 static void _draw_stats() {
     tft.fillRect(0, CONTENT_Y, TFT_WIDTH, CONTENT_H, C_BG);
-    _header("Statistics", 0);
+    _header("Tools", 0);
     char buf[32];
     const int16_t SH = 40;
     const int16_t SG = 3;
     int16_t y = CONTENT_Y + 4;
+
+    // Uptime card
     uint32_t uptime_s = (millis() - _boot_ms) / 1000UL;
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, C_DIVIDER);
-    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("RX PACKETS");
-    tft.setTextColor(C_GREEN); tft.setTextSize(2);
-    snprintf(buf, sizeof(buf), "%lu", _rx);
-    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
-    y += SH + SG;
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, C_DIVIDER);
-    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("TX PACKETS");
-    tft.setTextColor(C_ORANGE); tft.setTextSize(2);
-    snprintf(buf, sizeof(buf), "%lu", _tx);
-    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
-    y += SH + SG;
     _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
     tft.setCursor(CARD_PAD + 8, y + 4); tft.print("UPTIME");
@@ -607,20 +617,56 @@ static void _draw_stats() {
     snprintf(buf, sizeof(buf), "%02luh%02lum%02lus", h, m, s);
     tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
     y += SH + SG;
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, C_DIVIDER);
+
+    // Bluetooth toggle card
+    bool bt_on = (bt_state != BT_STATE_OFF);
+    uint16_t bt_border = bt_on ? C_GREEN : C_RED;
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, bt_border);
+    // Top row: label left, tap hint right (both small)
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("LAST SIGNAL");
-    if (_rssi == -292) {
-        tft.setTextColor(C_TEXT_DIM); tft.setTextSize(2);
-        tft.setCursor(CARD_PAD + 8, y + 16); tft.print("No signal yet");
-    } else {
-        uint16_t rc = (_rssi > -80) ? C_GREEN : (_rssi > -100) ? C_YELLOW : C_RED;
-        tft.setTextColor(rc); tft.setTextSize(2);
-        snprintf(buf, sizeof(buf), "%ddBm / %.1fdB", _rssi, _snr);
-        tft.setCursor(CARD_PAD + 4, y + 16); tft.print(buf);
-    }
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("BLUETOOTH");
+    const char* hint_txt = bt_on ? "(tap to disable)" : "(tap to enable)";
+    int16_t hint_w = strlen(hint_txt) * 6;  // textSize 1 ≈ 6px/char
+    tft.setCursor(TFT_WIDTH - CARD_PAD - 8 - hint_w, y + 4);
+    tft.print(hint_txt);
+    // Centered state (big)
+    const char* state_txt = bt_on ? "Enabled" : "Disabled";
+    int16_t state_w = strlen(state_txt) * 12;  // textSize 2 ≈ 12px/char
+    tft.setTextColor(bt_on ? C_GREEN : C_RED); tft.setTextSize(2);
+    tft.setCursor((TFT_WIDTH - state_w) / 2, y + 18); tft.print(state_txt);
     y += SH + SG;
-    _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, 44, "POWER OFF", C_CARD, C_RED, 2);
+
+    // WiFi toggle card
+    bool wifi_on = (wifi_mode != WR_WIFI_OFF);
+    bool wifi_connected = wifi_on && (wr_state == WR_STATE_CONNECTED);
+    uint16_t wifi_border = !wifi_on ? C_RED : (wifi_connected ? C_GREEN : C_YELLOW);
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, wifi_border);
+    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("WIFI");
+    const char* wifi_hint = wifi_on ? "(tap to disable)" : "(tap to enable)";
+    int16_t wifi_hint_w = strlen(wifi_hint) * 6;
+    tft.setCursor(TFT_WIDTH - CARD_PAD - 8 - wifi_hint_w, y + 4);
+    tft.print(wifi_hint);
+    if (wifi_connected) {
+        String ssid = WiFi.SSID();
+        char ssidbuf[14];
+        snprintf(ssidbuf, sizeof(ssidbuf), "%s", ssid.c_str());
+        int16_t ssid_w = strlen(ssidbuf) * 6;
+        tft.setCursor((TFT_WIDTH - ssid_w) / 2, y + 4);
+        tft.print(ssidbuf);
+    }
+    const char* wifi_state_txt;
+    uint16_t wifi_state_col;
+    if (!wifi_on)            { wifi_state_txt = "Disabled";    wifi_state_col = C_RED; }
+    else if (wifi_connected) { wifi_state_txt = "Connected";   wifi_state_col = C_GREEN; }
+    else                     { wifi_state_txt = "Connecting";  wifi_state_col = C_YELLOW; }
+    int16_t wifi_state_w = strlen(wifi_state_txt) * 12;
+    tft.setTextColor(wifi_state_col); tft.setTextSize(2);
+    tft.setCursor((TFT_WIDTH - wifi_state_w) / 2, y + 18); tft.print(wifi_state_txt);
+    y += SH + SG;
+
+    // Display off button
+    _btn(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, 44, "DISPLAY OFF", C_CARD, C_RED, 2);
 }
 // ── Touch handling ────────────────────────────────────────────────────────────
 static void _handle_touch() {
@@ -656,24 +702,48 @@ static void _handle_touch() {
         return;
     }
 
-    // STATS tab power off button
+    // TOOLS tab buttons (BT toggle, WiFi toggle, DISPLAY OFF)
     if (_tab == TAB_STATS) {
-        int16_t pwr_y = CONTENT_Y + 4 + (40 + 3) * 4;
+        // BLUETOOTH toggle card sits 2nd (after UPTIME)
+        int16_t bt_y = CONTENT_Y + 4 + (40 + 3) * 1;
+        if (ty >= (uint16_t)bt_y && ty <= (uint16_t)(bt_y + 40)) {
+            tft.fillRoundRect(CARD_PAD, bt_y, TFT_WIDTH - CARD_PAD*2, 40, CARD_RADIUS, C_ACCENT);
+            delay(60);
+            if (bt_state != BT_STATE_OFF) {
+                bt_stop();
+                bt_conf_save(false);
+            } else {
+                bt_start();
+                bt_conf_save(true);
+            }
+            _needs_redraw = true;
+        }
+        // WIFI toggle card sits 3rd (after UPTIME + BLUETOOTH)
+        int16_t wf_y = CONTENT_Y + 4 + (40 + 3) * 2;
+        if (ty >= (uint16_t)wf_y && ty <= (uint16_t)(wf_y + 40)) {
+            tft.fillRoundRect(CARD_PAD, wf_y, TFT_WIDTH - CARD_PAD*2, 40, CARD_RADIUS, C_ACCENT);
+            delay(60);
+            if (wifi_mode != WR_WIFI_OFF) {
+                wifi_remote_stop();
+                wifi_mode = WR_WIFI_OFF;
+                wr_conf_save(WR_WIFI_OFF);
+            } else {
+                wifi_mode = WR_WIFI_STA;
+                wr_conf_save(WR_WIFI_STA);
+                wifi_remote_init();
+            }
+            _needs_redraw = true;
+        }
+        // DISPLAY OFF button is 4th (after UPTIME + BLUETOOTH + WIFI)
+        int16_t pwr_y = CONTENT_Y + 4 + (40 + 3) * 3;
         if (ty >= (uint16_t)pwr_y && ty <= (uint16_t)(pwr_y + 44)) {
-            // Flash button red then show message
             tft.fillRoundRect(CARD_PAD, pwr_y, TFT_WIDTH - CARD_PAD*2, 44, CARD_RADIUS, C_RED);
             tft.setTextColor(C_BG); tft.setTextSize(2);
-            int16_t tw = 10 * 12; tft.setCursor((TFT_WIDTH - tw)/2, pwr_y + 14);
-            tft.print("POWER OFF");
-            delay(500);
+            int16_t tw = 11 * 12; tft.setCursor((TFT_WIDTH - tw)/2, pwr_y + 14);
+            tft.print("DISPLAY OFF");
+            delay(300);
             tft.fillScreen(C_BG);
-            tft.setTextColor(C_RED); tft.setTextSize(2);
-            tft.setCursor(20, 130); tft.print("Powering off...");
-            tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-            tft.setCursor(20, 160); tft.print("Hold USER btn to wake up");
-            delay(1500);
-            tft_backlight(false);
-            sleep_now();
+            display_blanked = true;
         }
     }
 
