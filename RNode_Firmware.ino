@@ -152,6 +152,7 @@ void setup() {
   fifo_init(&serialFIFO, serialBuffer, CONFIG_UART_BUFFER_SIZE);
 
   Serial.begin(serial_baudrate);
+  esp_read_mac(dev_bt_mac, ESP_MAC_BT);
   tft_init();
 
   #if HAS_NP
@@ -327,6 +328,11 @@ void setup() {
         else                 { avoid_interference = false; }
       #endif
     #endif
+  #endif
+
+  // Auto-provision EEPROM on first boot when flag is set
+  #ifdef AUTO_PROVISION_V4
+  auto_provision_eeprom_v4();
   #endif
 
   // Validate board health, EEPROM and config

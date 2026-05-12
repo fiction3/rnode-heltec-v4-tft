@@ -1488,6 +1488,107 @@ bool eeprom_info_locked() {
 	}
 }
 
+// ── Diagnostic: dump EEPROM provisioning state to serial ────────────────
+// Temporary diagnostic for auto-provisioning development. Remove later.
+static inline uint8_t _diag_rd(int a) {
+    #if HAS_EEPROM
+        return EEPROM.read(eeprom_addr(a));
+    #elif MCU_VARIANT == MCU_NRF52
+        return eeprom_read(eeprom_addr(a));
+    #else
+        return 0;
+    #endif
+}
+bool eeprom_product_valid();
+bool eeprom_model_valid();
+bool eeprom_hwrev_valid();
+bool eeprom_checksum_valid();
+void eeprom_diagnostic_dump() {
+    Serial.write("\r\n=== EEPROM Diagnostic Dump ===\r\n");
+    char line[96];
+    uint8_t product = _diag_rd(ADDR_PRODUCT);
+    uint8_t modelB  = _diag_rd(ADDR_MODEL);
+    uint8_t hwrev   = _diag_rd(ADDR_HW_REV);
+    snprintf(line, sizeof(line), "# PRODUCT (0x00): 0x%02X (expect 0xC3 PRODUCT_H32_V4)\r\n", product); Serial.write(line);
+    snprintf(line, sizeof(line), "# MODEL   (0x01): 0x%02X (expect 0xC8 MODEL_C8)\r\n", modelB); Serial.write(line);
+    snprintf(line, sizeof(line), "# HW_REV  (0x02): 0x%02X (must be != 0x00 and != 0xFF)\r\n", hwrev); Serial.write(line);
+    snprintf(line, sizeof(line), "# SERIAL  (0x03): %02X %02X %02X %02X\r\n",
+        _diag_rd(0x03), _diag_rd(0x04), _diag_rd(0x05), _diag_rd(0x06)); Serial.write(line);
+    snprintf(line, sizeof(line), "# MADE    (0x07): %02X %02X %02X %02X\r\n",
+        _diag_rd(0x07), _diag_rd(0x08), _diag_rd(0x09), _diag_rd(0x0A)); Serial.write(line);
+    Serial.write("# CHKSUM  (0x0B): ");
+    for (int i = 0; i < 16; i++) { snprintf(line, sizeof(line), "%02X ", _diag_rd(0x0B+i)); Serial.write(line); }
+    Serial.write("\r\n# SIGNAT  (0x1B): ");
+    for (int i = 0; i < 16; i++) { snprintf(line, sizeof(line), "%02X ", _diag_rd(0x1B+i)); Serial.write(line); }
+    Serial.write(" ... (128 bytes total)\r\n");
+    snprintf(line, sizeof(line), "# LOCK    (0x9B): 0x%02X (expect 0x73)\r\n", _diag_rd(ADDR_INFO_LOCK)); Serial.write(line);
+    Serial.write("# Validation:\r\n");
+    snprintf(line, sizeof(line), "#   product_valid:  %s\r\n", eeprom_product_valid()  ? "YES" : "NO"); Serial.write(line);
+    snprintf(line, sizeof(line), "#   model_valid:    %s\r\n", eeprom_model_valid()    ? "YES" : "NO"); Serial.write(line);
+    snprintf(line, sizeof(line), "#   hwrev_valid:    %s\r\n", eeprom_hwrev_valid()    ? "YES" : "NO"); Serial.write(line);
+    snprintf(line, sizeof(line), "#   checksum_valid: %s\r\n", eeprom_checksum_valid() ? "YES" : "NO"); Serial.write(line);
+    snprintf(line, sizeof(line), "#   info_locked:    %s\r\n", eeprom_info_locked()    ? "YES" : "NO"); Serial.write(line);
+    Serial.write("===============================\r\n\r\n");
+}
+
+// ── Auto-provision EEPROM for Heltec V4 ──────────────────────────────────
+// Writes the same provisioning bytes Liam Cottle's web tool would write.
+// Fires only when EEPROM is unprovisioned (idempotent on second boot).
+#include "esp_mac.h"
+bool eeprom_lock_set();
+void auto_provision_eeprom_v4() {
+    // Skip if already provisioned and valid
+    if (eeprom_lock_set() && eeprom_product_valid() && eeprom_model_valid() &&
+        eeprom_hwrev_valid() && eeprom_checksum_valid()) {
+        Serial.write("# Auto-prov: EEPROM already valid, skipping.\r\n");
+        return;
+    }
+    Serial.write("# Auto-prov: writing V4 EEPROM provisioning...\r\n");
+
+    // Identity bytes (0x00..0x02)
+    eeprom_update(eeprom_addr(ADDR_PRODUCT), 0xC3);  // PRODUCT_H32_V4
+    eeprom_update(eeprom_addr(ADDR_MODEL),   0xC8);  // MODEL_C8
+    eeprom_update(eeprom_addr(ADDR_HW_REV),  0x01);
+
+    // Serial (0x03..0x06): derive from MAC for per-device uniqueness
+    uint8_t mac[8] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    eeprom_update(eeprom_addr(0x03), mac[2]);
+    eeprom_update(eeprom_addr(0x04), mac[3]);
+    eeprom_update(eeprom_addr(0x05), mac[4]);
+    eeprom_update(eeprom_addr(0x06), mac[5]);
+
+    // Made (0x07..0x0A): fixed epoch (cosmetic; matches web tool style)
+    uint32_t made = 0x6A01F46F;  // 2026-05-11 ~5:19 UTC
+    eeprom_update(eeprom_addr(0x07), (made >> 24) & 0xFF);
+    eeprom_update(eeprom_addr(0x08), (made >> 16) & 0xFF);
+    eeprom_update(eeprom_addr(0x09), (made >>  8) & 0xFF);
+    eeprom_update(eeprom_addr(0x0A),  made        & 0xFF);
+
+    // Checksum (0x0B..0x1A): MD5 of bytes 0x00..0x0A
+    char buf[CHECKSUMMED_SIZE];
+    for (int i = 0; i < CHECKSUMMED_SIZE; i++) {
+        buf[i] = (char)EEPROM.read(eeprom_addr(i));
+    }
+    unsigned char* hash = MD5::make_hash(buf, CHECKSUMMED_SIZE);
+    for (int i = 0; i < 16; i++) {
+        eeprom_update(eeprom_addr(ADDR_CHKSUM + i), (uint8_t)hash[i]);
+    }
+    free(hash);
+
+    // Signature (0x1B..0x9A): 128 zero bytes (matches Liam's tool)
+    for (int i = 0; i < 128; i++) {
+        eeprom_update(eeprom_addr(ADDR_SIGNATURE + i), 0x00);
+    }
+
+    // Lock byte (0x9B)
+    eeprom_update(eeprom_addr(ADDR_INFO_LOCK), INFO_LOCK_BYTE);
+
+    Serial.write("# Auto-prov: done. Rebooting to revalidate...\r\n");
+    delay(1000);
+    ESP.restart();
+}
+
 void eeprom_dump_info() {
 	for (int addr = ADDR_PRODUCT; addr <= ADDR_INFO_LOCK; addr++) {
         #if HAS_EEPROM
