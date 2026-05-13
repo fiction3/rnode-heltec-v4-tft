@@ -54,6 +54,10 @@ void wr_conf_save(uint8_t mode);
   #define WR_STATE_ON        0x01
   #define WR_STATE_CONNECTED 0x02
 #endif
+#ifndef MAJ_VERS
+  #define MAJ_VERS  0x01
+  #define MIN_VERS  0x56
+#endif
 void bt_enable_pairing();
 void bt_disable_pairing();
 
@@ -110,6 +114,8 @@ static int16_t  _rssi   = 0; static float    _snr  = 0;
 static uint32_t _rx     = 0; static uint32_t _tx   = 0;
 static bool     _airlock= false; static uint8_t _led = 0;
 static uint8_t  _txp    = 0;     static bool     _host_connected = false;
+static uint32_t _last_rx_count_seen = 0;
+static uint32_t _last_rx_time       = 0;
 
 // Touch debounce
 #define TOUCH_DEBOUNCE  150
@@ -304,34 +310,56 @@ void _draw_splash() {
 static void _draw_home() {
     tft.fillRect(0, CONTENT_Y, TFT_WIDTH, CONTENT_H, C_BG);
 
-    // Status indicator dot colour
-    uint16_t dot = _bt_connected ? C_GREEN :
+    bool wifi_conn = (wifi_mode != WR_WIFI_OFF) && (wr_state == WR_STATE_CONNECTED);
+    bool any_conn = _host_connected || _bt_connected || wifi_conn;
+    uint16_t dot = any_conn ? C_GREEN :
                    (_bt_state == BT_STATE_PAIRING) ? C_YELLOW : C_TEXT_DIM;
     _header("RNode Status", dot);
 
     char buf[32];
     int16_t y = CONTENT_Y + 4;
 
-    // Frequency card
+    // CONNECTION card - real connection type
     _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("FREQUENCY");
-    tft.setTextColor(C_ACCENT); tft.setTextSize(2);
-    snprintf(buf, sizeof(buf), "%.3f MHz", _freq);
-    int16_t fw = strlen(buf) * 12;
-    tft.setCursor(TFT_WIDTH - CARD_PAD - 8 - fw, y + 16);
-    tft.print(buf);
+    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("CONNECTION");
+    tft.setTextSize(2);
+    if (_host_connected) {
+        tft.setTextColor(C_GREEN);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("USB Host");
+    } else if (_bt_connected) {
+        tft.setTextColor(C_GREEN);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Bluetooth");
+    } else if (wifi_conn) {
+        tft.setTextColor(C_GREEN);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Network");
+    } else if (_bt_state == BT_STATE_PAIRING) {
+        tft.setTextColor(C_YELLOW);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Pairing...");
+    } else {
+        tft.setTextColor(C_TEXT_DIM);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Disconnected");
+    }
     y += CARD_H + 3;
 
-    // SF / BW card
+    // LAST PACKET card
     _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("SF / BW");
-    tft.setTextColor(C_ACCENT); tft.setTextSize(2);
-    snprintf(buf, sizeof(buf), "SF%u / %lukHz", _sf, _bw / 1000UL);
-    fw = strlen(buf) * 12;
-    tft.setCursor(TFT_WIDTH - CARD_PAD - 8 - fw, y + 16);
-    tft.print(buf);
+    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("LAST PACKET");
+    tft.setTextSize(2);
+    if (_last_rx_time == 0) {
+        tft.setTextColor(C_TEXT_DIM);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("None yet");
+    } else {
+        uint32_t age = (millis() - _last_rx_time) / 1000UL;
+        char abuf[20];
+        if (age < 60)        snprintf(abuf, sizeof(abuf), "%lus ago", age);
+        else if (age < 3600) snprintf(abuf, sizeof(abuf), "%lum %lus ago", age/60, age%60);
+        else                 snprintf(abuf, sizeof(abuf), "%luh %lum ago", age/3600, (age%3600)/60);
+        uint16_t ac = (age < 30) ? C_GREEN : (age < 300) ? C_YELLOW : C_TEXT_DIM;
+        tft.setTextColor(ac);
+        tft.setCursor(CARD_PAD + 8, y + 18); tft.print(abuf);
+    }
     y += CARD_H + 3;
 
     // RSSI / SNR card (split)
@@ -349,23 +377,6 @@ static void _draw_home() {
     tft.setTextColor(sc); tft.setTextSize(2);
     snprintf(buf, sizeof(buf), "%.1fdB", _snr);
     tft.setCursor(TFT_WIDTH/2 + 4, y + 18); tft.print(buf);
-    y += CARD_H + 3;
-
-    // Connection status card
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
-    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("CONNECTION");
-    tft.setTextSize(2);
-    if (_bt_connected) {
-        tft.setTextColor(C_GREEN);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("BT Connected");
-    } else if (_bt_state == BT_STATE_PAIRING) {
-        tft.setTextColor(C_YELLOW);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Pairing...");
-    } else {
-        tft.setTextColor(C_TEXT_DIM);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("Waiting");
-    }
     y += CARD_H + 3;
 
     // Airtime lock warning
@@ -607,16 +618,35 @@ static void _draw_stats() {
     const int16_t SG = 3;
     int16_t y = CONTENT_Y + 4;
 
-    // Uptime card
+    // Uptime card (single-row, compact)
+    const int16_t UPT_H = 20;
     uint32_t uptime_s = (millis() - _boot_ms) / 1000UL;
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, SH, C_CARD, C_DIVIDER);
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, UPT_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("UPTIME");
-    tft.setTextColor(C_ACCENT); tft.setTextSize(2);
+    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("UPTIME");
     uint32_t h = uptime_s/3600, m = (uptime_s%3600)/60, s = uptime_s%60;
-    snprintf(buf, sizeof(buf), "%02luh%02lum%02lus", h, m, s);
-    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(buf);
-    y += SH + SG;
+    snprintf(buf, sizeof(buf), "%02luh %02lum %02lus", h, m, s);
+    int16_t up_w = strlen(buf) * 6;
+    tft.setCursor(TFT_WIDTH - CARD_PAD - 8 - up_w, y + 6); tft.print(buf);
+    y += UPT_H + SG;
+
+    // Firmware info card (60px, 4 lines)
+    const int16_t FW_H = 60;
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, FW_H, C_CARD, C_DIVIDER);
+    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("FIRMWARE");
+    char fwbuf[64];
+    tft.setTextColor(C_ACCENT); tft.setTextSize(1);
+    snprintf(fwbuf, sizeof(fwbuf), "v%u.%02u  (built %s)", MAJ_VERS, MIN_VERS, __DATE__);
+    tft.setCursor(CARD_PAD + 8, y + 16); tft.print(fwbuf);
+    tft.setTextColor(C_TEXT_DIM);
+    snprintf(fwbuf, sizeof(fwbuf), "ESP32-S3  16MB Flash  SX1262");
+    tft.setCursor(CARD_PAD + 8, y + 28); tft.print(fwbuf);
+    tft.setTextColor(C_ACCENT);
+    snprintf(fwbuf, sizeof(fwbuf), "Free RAM: %luKB / 320KB",
+             ESP.getFreeHeap() / 1024UL);
+    tft.setCursor(CARD_PAD + 8, y + 40); tft.print(fwbuf);
+    y += FW_H + SG;
 
     // Bluetooth toggle card
     bool bt_on = (bt_state != BT_STATE_OFF);
@@ -704,8 +734,8 @@ static void _handle_touch() {
 
     // TOOLS tab buttons (BT toggle, WiFi toggle, DISPLAY OFF)
     if (_tab == TAB_STATS) {
-        // BLUETOOTH toggle card sits 2nd (after UPTIME)
-        int16_t bt_y = CONTENT_Y + 4 + (40 + 3) * 1;
+        // BLUETOOTH toggle card sits after UPTIME (20+3) + FIRMWARE (60+3)
+        int16_t bt_y = CONTENT_Y + 4 + (20 + 3) + (60 + 3);
         if (ty >= (uint16_t)bt_y && ty <= (uint16_t)(bt_y + 40)) {
             tft.fillRoundRect(CARD_PAD, bt_y, TFT_WIDTH - CARD_PAD*2, 40, CARD_RADIUS, C_ACCENT);
             delay(60);
@@ -718,8 +748,8 @@ static void _handle_touch() {
             }
             _needs_redraw = true;
         }
-        // WIFI toggle card sits 3rd (after UPTIME + BLUETOOTH)
-        int16_t wf_y = CONTENT_Y + 4 + (40 + 3) * 2;
+        // WIFI toggle card sits after UPTIME (20+3) + FIRMWARE (60+3) + BLUETOOTH (40+3)
+        int16_t wf_y = CONTENT_Y + 4 + (20 + 3) + (60 + 3) + (40 + 3);
         if (ty >= (uint16_t)wf_y && ty <= (uint16_t)(wf_y + 40)) {
             tft.fillRoundRect(CARD_PAD, wf_y, TFT_WIDTH - CARD_PAD*2, 40, CARD_RADIUS, C_ACCENT);
             delay(60);
@@ -734,8 +764,8 @@ static void _handle_touch() {
             }
             _needs_redraw = true;
         }
-        // DISPLAY OFF button is 4th (after UPTIME + BLUETOOTH + WIFI)
-        int16_t pwr_y = CONTENT_Y + 4 + (40 + 3) * 3;
+        // DISPLAY OFF button below all 4 cards
+        int16_t pwr_y = CONTENT_Y + 4 + (20 + 3) + (60 + 3) + (40 + 3) * 2;
         if (ty >= (uint16_t)pwr_y && ty <= (uint16_t)(pwr_y + 44)) {
             tft.fillRoundRect(CARD_PAD, pwr_y, TFT_WIDTH - CARD_PAD*2, 44, CARD_RADIUS, C_RED);
             tft.setTextColor(C_BG); tft.setTextSize(2);
@@ -798,6 +828,10 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
     // Update cached values
     _freq=freq_mhz; _sf=sf; _bw=bw_hz; _cr=cr;
     _rssi=last_rssi; _snr=last_snr;
+    if (rx_count != _last_rx_count_seen) {
+        _last_rx_count_seen = rx_count;
+        _last_rx_time = millis();
+    }
     _rx=rx_count; _tx=tx_count;
     _airlock=airtime_lock; _led=led_state;
     _txp=tx_power_dbm; _host_connected=host_connected;
