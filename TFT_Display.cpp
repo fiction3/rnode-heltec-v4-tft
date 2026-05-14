@@ -116,6 +116,14 @@ static bool     _airlock= false; static uint8_t _led = 0;
 static uint8_t  _txp    = 0;     static bool     _host_connected = false;
 static uint32_t _last_rx_count_seen = 0;
 static uint32_t _last_rx_time       = 0;
+static uint32_t _last_tx_count_seen = 0;
+static uint32_t _last_tx_time       = 0;
+// RSSI sparkline ring buffer (64 samples, ~1 sample/sec)
+#define RSSI_HIST_LEN 64
+static int16_t  _rssi_hist[RSSI_HIST_LEN];
+static uint8_t  _rssi_hist_head     = 0;
+static bool     _rssi_hist_init     = false;
+static uint32_t _last_rssi_sample   = 0;
 
 // Touch debounce
 #define TOUCH_DEBOUNCE  150
@@ -307,6 +315,41 @@ void _draw_splash() {
 }
 
 // ── HOME tab ──────────────────────────────────────────────────────────────────
+// Paint just the sparkline card on HOME (avoids full screen redraw on each sample).
+// Card is at y = CONTENT_Y + 4 + (CARD_H + 3) * 2 (3rd card after CONNECTION + RSSI/SNR).
+static void _paint_sparkline() {
+    int16_t y = CONTENT_Y + 4 + (CARD_H + 3) * 2;
+    // Redraw the whole card (background, label, value, bars)
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
+    tft.setCursor(CARD_PAD + 8, y + 4); tft.print("RSSI HISTORY");
+    char vbuf[16];
+    if (_rssi == -292) snprintf(vbuf, sizeof(vbuf), "--- dBm");
+    else               snprintf(vbuf, sizeof(vbuf), "%d dBm", _rssi);
+    int16_t vw = strlen(vbuf) * 6;
+    uint16_t vc = (_rssi == -292) ? C_TEXT_DIM
+                : (_rssi > -80)   ? C_GREEN
+                : (_rssi > -100)  ? C_YELLOW : C_RED;
+    tft.setTextColor(vc);
+    tft.setCursor(TFT_WIDTH - CARD_PAD - 8 - vw, y + 4); tft.print(vbuf);
+    const int16_t bar_w   = 3;
+    const int16_t bar_top = y + 16;
+    const int16_t bar_max = CARD_H - 16 - 4;
+    const int16_t bars_total_w = RSSI_HIST_LEN * bar_w;
+    const int16_t bars_x0 = (TFT_WIDTH - bars_total_w) / 2;
+    for (int i = 0; i < RSSI_HIST_LEN; i++) {
+        uint8_t idx = (_rssi_hist_head + i) % RSSI_HIST_LEN;
+        int16_t v = _rssi_hist[idx];
+        int16_t bx = bars_x0 + i * bar_w;
+        if (v == -292) continue;
+        int16_t mapped = v + 120;
+        if (mapped < 0) mapped = 0;
+        if (mapped > 90) mapped = 90;
+        int16_t bh = (mapped * bar_max) / 90;
+        uint16_t bc = (v > -80) ? C_GREEN : (v > -100) ? C_YELLOW : C_RED;
+        tft.fillRect(bx, bar_top + bar_max - bh, bar_w - 1, bh, bc);
+    }
+}
 static void _draw_home() {
     tft.fillRect(0, CONTENT_Y, TFT_WIDTH, CONTENT_H, C_BG);
 
@@ -342,26 +385,6 @@ static void _draw_home() {
     }
     y += CARD_H + 3;
 
-    // LAST PACKET card
-    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
-    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
-    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("LAST PACKET");
-    tft.setTextSize(2);
-    if (_last_rx_time == 0) {
-        tft.setTextColor(C_TEXT_DIM);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print("None yet");
-    } else {
-        uint32_t age = (millis() - _last_rx_time) / 1000UL;
-        char abuf[20];
-        if (age < 60)        snprintf(abuf, sizeof(abuf), "%lus ago", age);
-        else if (age < 3600) snprintf(abuf, sizeof(abuf), "%lum %lus ago", age/60, age%60);
-        else                 snprintf(abuf, sizeof(abuf), "%luh %lum ago", age/3600, (age%3600)/60);
-        uint16_t ac = (age < 30) ? C_GREEN : (age < 300) ? C_YELLOW : C_TEXT_DIM;
-        tft.setTextColor(ac);
-        tft.setCursor(CARD_PAD + 8, y + 18); tft.print(abuf);
-    }
-    y += CARD_H + 3;
-
     // RSSI / SNR card (split)
     _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
     tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
@@ -377,6 +400,10 @@ static void _draw_home() {
     tft.setTextColor(sc); tft.setTextSize(2);
     snprintf(buf, sizeof(buf), "%.1fdB", _snr);
     tft.setCursor(TFT_WIDTH/2 + 4, y + 18); tft.print(buf);
+    y += CARD_H + 3;
+
+    // RSSI HISTORY sparkline (drawn by helper to support in-place repaint)
+    _paint_sparkline();
     y += CARD_H + 3;
 
     // Airtime lock warning
@@ -825,16 +852,44 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
     }
     if (display_blanked) return;
 
+    // Sample RSSI into history once per second (for sparkline)
+    if (now - _last_rssi_sample >= 1000) {
+        _last_rssi_sample = now;
+        if (!_rssi_hist_init) {
+            for (int i = 0; i < RSSI_HIST_LEN; i++) _rssi_hist[i] = -292;
+            _rssi_hist_init = true;
+        }
+        _rssi_hist[_rssi_hist_head] = last_rssi;
+        _rssi_hist_head = (_rssi_hist_head + 1) % RSSI_HIST_LEN;
+        // No auto-repaint: sparkline updates only when the user switches to HOME
+    }
+    // Detect state changes that should trigger a redraw
+    bool new_bt_conn = (bt_state == BT_STATE_CONNECTED);
+    if (host_connected != _host_connected ||
+        new_bt_conn   != _bt_connected   ||
+        last_rssi     != _rssi           ||
+        last_snr      != _snr            ||
+        airtime_lock  != _airlock        ||
+        tx_power_dbm  != _txp) {
+        _needs_redraw = true;
+    }
     // Update cached values
     _freq=freq_mhz; _sf=sf; _bw=bw_hz; _cr=cr;
     _rssi=last_rssi; _snr=last_snr;
     if (rx_count != _last_rx_count_seen) {
         _last_rx_count_seen = rx_count;
         _last_rx_time = millis();
+        _needs_redraw = true;
+    }
+    if (tx_count != _last_tx_count_seen) {
+        _last_tx_count_seen = tx_count;
+        _last_tx_time = millis();
+        _needs_redraw = true;
     }
     _rx=rx_count; _tx=tx_count;
     _airlock=airtime_lock; _led=led_state;
     _txp=tx_power_dbm; _host_connected=host_connected;
+    _bt_connected = new_bt_conn;
 
     // Always handle touch first
     _handle_touch();

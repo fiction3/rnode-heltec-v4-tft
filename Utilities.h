@@ -1584,6 +1584,16 @@ void auto_provision_eeprom_v4() {
     // Lock byte (0x9B)
     eeprom_update(eeprom_addr(ADDR_INFO_LOCK), INFO_LOCK_BYTE);
 
+    // Write firmware hash to EEPROM (matches "Set Firmware Hash" step)
+    {
+        uint8_t fw_hash[DEV_HASH_LEN];
+        esp_partition_get_sha256(esp_ota_get_running_partition(), fw_hash);
+        for (int i = 0; i < DEV_HASH_LEN; i++) {
+            eeprom_update(dev_fwhash_addr(i), fw_hash[i]);
+        }
+        Serial.write("# Auto-prov: firmware hash written.\r\n");
+    }
+
     Serial.write("# Auto-prov: done. Rebooting to revalidate...\r\n");
     delay(1000);
     ESP.restart();
