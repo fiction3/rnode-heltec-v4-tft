@@ -112,7 +112,7 @@ static float    _freq   = 0; static uint8_t  _sf   = 0;
 static uint32_t _bw     = 0; static int8_t   _cr   = 0;
 static int16_t  _rssi   = 0; static float    _snr  = 0;
 static uint32_t _rx     = 0; static uint32_t _tx   = 0;
-static bool     _airlock= false; static uint8_t _led = 0;
+static bool     _airlock= false; static bool _rx_ongoing = false;
 static uint8_t  _txp    = 0;     static bool     _host_connected = false;
 static uint32_t _last_rx_count_seen = 0;
 static uint32_t _last_rx_time       = 0;
@@ -317,6 +317,33 @@ void _draw_splash() {
 // ── HOME tab ──────────────────────────────────────────────────────────────────
 // Paint just the sparkline card on HOME (avoids full screen redraw on each sample).
 // Card is at y = CONTENT_Y + 4 + (CARD_H + 3) * 2 (3rd card after CONNECTION + RSSI/SNR).
+static void _paint_radio_state() {
+    // Card position: 3rd card (after CONNECTION + RSSI/SNR)
+    int16_t y = CONTENT_Y + 4 + (CARD_H + 3) * 2;
+    _card(CARD_PAD, y, TFT_WIDTH - CARD_PAD*2, CARD_H, C_CARD, C_DIVIDER);
+    tft.setTextColor(C_TEXT_DIM); tft.setTextSize(1);
+    tft.setCursor(CARD_PAD + 8, y + 6); tft.print("RADIO STATE");
+    const char* label;
+    uint16_t color;
+    if (_airlock) {
+        label = "LOCKED";
+        color = C_RED;
+    } else if (_rx_ongoing) {
+        label = "RECEIVING";
+        color = C_YELLOW;
+    } else {
+        label = "IDLE";
+        color = C_TEXT_DIM;
+    }
+    tft.setTextColor(color); tft.setTextSize(3);
+    int16_t lw = strlen(label) * 18;  // TextSize 3 = ~18px wide per char
+    tft.setCursor((TFT_WIDTH - lw) / 2, y + 22);
+    tft.print(label);
+}
+
+// ── HOME tab ──────────────────────────────────────────────────────────────────
+// Paint just the sparkline card on HOME (avoids full screen redraw on each sample).
+// Card is at y = CONTENT_Y + 4 + (CARD_H + 3) * 2 (3rd card after CONNECTION + RSSI/SNR).
 static void _paint_sparkline() {
     int16_t y = CONTENT_Y + 4 + (CARD_H + 3) * 2;
     // Redraw the whole card (background, label, value, bars)
@@ -402,8 +429,8 @@ static void _draw_home() {
     tft.setCursor(TFT_WIDTH/2 + 4, y + 18); tft.print(buf);
     y += CARD_H + 3;
 
-    // RSSI HISTORY sparkline (drawn by helper to support in-place repaint)
-    _paint_sparkline();
+    // RADIO STATE card (drawn by helper)
+    _paint_radio_state();
     y += CARD_H + 3;
 
     // Airtime lock warning
@@ -421,7 +448,7 @@ static void _draw_home() {
 #define BT_CARD_H    34
 static void _draw_radio() {
     tft.fillRect(0, CONTENT_Y, TFT_WIDTH, CONTENT_H, C_BG);
-    _header("Radio Config", _led == 1 ? C_GREEN : _led == 2 ? C_RED : C_TEXT_DIM);
+    _header("Radio Config", _airlock ? C_RED : _rx_ongoing ? C_GREEN : C_TEXT_DIM);
 
     char buf[32];
     int16_t y = CONTENT_Y + 2;
@@ -839,7 +866,7 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
                 uint32_t rx_count, uint32_t tx_count,
                 bool airtime_lock,
                 uint8_t tx_power_dbm, bool host_connected,
-                uint8_t led_state) {
+                bool rx_ongoing) {
 
     uint32_t now = millis();
 
@@ -852,17 +879,6 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
     }
     if (display_blanked) return;
 
-    // Sample RSSI into history once per second (for sparkline)
-    if (now - _last_rssi_sample >= 1000) {
-        _last_rssi_sample = now;
-        if (!_rssi_hist_init) {
-            for (int i = 0; i < RSSI_HIST_LEN; i++) _rssi_hist[i] = -292;
-            _rssi_hist_init = true;
-        }
-        _rssi_hist[_rssi_hist_head] = last_rssi;
-        _rssi_hist_head = (_rssi_hist_head + 1) % RSSI_HIST_LEN;
-        // No auto-repaint: sparkline updates only when the user switches to HOME
-    }
     // Detect state changes that should trigger a redraw
     bool new_bt_conn = (bt_state == BT_STATE_CONNECTED);
     if (host_connected != _host_connected ||
@@ -887,7 +903,7 @@ void tft_update(float freq_mhz, uint8_t sf, uint32_t bw_hz, int8_t cr,
         _needs_redraw = true;
     }
     _rx=rx_count; _tx=tx_count;
-    _airlock=airtime_lock; _led=led_state;
+    _airlock=airtime_lock; _rx_ongoing=rx_ongoing;
     _txp=tx_power_dbm; _host_connected=host_connected;
     _bt_connected = new_bt_conn;
 

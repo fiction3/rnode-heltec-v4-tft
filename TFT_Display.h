@@ -98,7 +98,7 @@ void tft_update(
     bool     airtime_lock,
     uint8_t  tx_power_dbm,
     bool     host_connected,
-    uint8_t  led_state
+    bool     rx_ongoing
 );
 void tft_invalidate();
 void tft_backlight(bool on);
